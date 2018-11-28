@@ -1,0 +1,36 @@
+{
+    "name": "spcopy",
+    "displayName": "Sharepoint static files autodeploy",
+    "description": "Copies files from Sharepoint project to template or root folder.",
+    "version": "0.1.0",
+    "engines": {
+        "vscode": "^1.29.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "workspaceContains:**/SharePointProjectItem.spdata"
+    ],
+    "main": "./out/extension",
+    "contributes": {
+        "commands": []
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "postinstall": "node ./node_modules/vscode/bin/install",
+        "test": "npm run compile && node ./node_modules/vscode/bin/test"
+    },
+    "devDependencies": {
+        "typescript": "^2.6.1",
+        "vscode": "^1.1.21",
+        "@types/node": "^8.10.25",
+        "@types/mocha": "^2.2.42"
+    },
+    "dependencies": {
+        "regedit": "^3.0.2",
+        "xml2js": "^0.4.19"
+    }
+}
