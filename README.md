@@ -17,3 +17,7 @@ Users appreciate release notes as you update your extension.
 ### 0.1.0
 
 Initial release ~~may~~ contain some bugs. Test with SP 2016.
+
+### 0.2.0
+
+Auto copy of module files now supported, module must be included in a feature
