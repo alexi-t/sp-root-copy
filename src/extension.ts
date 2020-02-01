@@ -5,8 +5,9 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as util from 'util';
+import { searchFileAscending, parseXML } from './helpers';
+import { SPDataFile, ProjectItemFile } from './SPDataFileSchema';
 
-const xml2js = require('xml2js');
 let regedit = require('regedit');
 
 const readFile = util.promisify(fs.readFile);
@@ -15,8 +16,7 @@ const readDir = util.promisify(fs.readdir);
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-    var copier = new SPCopier();
-    var copyController = new SPCopyController(copier);
+    var copyController = new SPCopyController();
 
     context.subscriptions.push(copyController);
 
@@ -62,160 +62,127 @@ class SPCopier {
     }
 
 
-    private _searchSPDataFile(startDir: string, callback: (spDataPath: string) => void) {
-        var currentDir = startDir;
-        var _searchDir = (err: NodeJS.ErrnoException, files: string[]) => {
-            var spDataFound: boolean = false;
-            for (var i = 0; i < files.length; i++) {
-                var file = files[i];
-                if (file == 'SharePointProjectItem.spdata') {
-                    spDataFound = true;
-                    callback(path.join(currentDir, file));
-                    break;
-                }
-            }
-            if (!spDataFound) {
-                currentDir = path.resolve(currentDir, '..');
-                if (currentDir.length > vscode.workspace.workspaceFolders![0].uri.fsPath.length)
-                    fs.readdir(currentDir, _searchDir);
-            }
-        }
-        fs.readdir(currentDir, _searchDir);
-    }
-
-    private _searchForCsProjFile(startDir: string): Promise<string> {
-        var currentDir = startDir;
-        return new Promise<string>((r, e) => {
-            const _searchDir = (err: NodeJS.ErrnoException, files: string[]) => {
-                var csProjFound: boolean = false;
-                for (var i = 0; i < files.length; i++) {
-                    var file = files[i];
-                    if (file.indexOf('.csproj') > -1) {
-                        csProjFound = true;
-                        r(path.join(currentDir, file));
-                        break;
-                    }
-                }
-                if (!csProjFound) {
-                    currentDir = path.resolve(currentDir, '..');
-                    if (currentDir.length >= vscode.workspace.workspaceFolders![0].uri.fsPath.length)
-                        fs.readdir(currentDir, _searchDir);
-                }
-            }
-            fs.readdir(currentDir, _searchDir);
-        });
-    }
-
-    private async _deployModuleFile(filePath: string, relatedSPDataPath: string, pathInFeature: string) {
-        const csProjFile = await this._searchForCsProjFile(path.dirname(filePath));
+    private async _deployElementFile(filePath: string, relatedSPDataPath: string, pathInFeature: string) {
+        const workspaceRoot = vscode.workspace.workspaceFolders![0].uri.fsPath;
+        const csProjFile = await searchFileAscending(path.dirname(filePath), f => f.indexOf(".csproj") > -1);
         const projectDir = path.dirname(csProjFile);
         const spDataRelativeToProjectRoot = path.relative(projectDir, relatedSPDataPath);
         if (csProjFile) {
-            const parser = new xml2js.Parser();
-            parser.parseString(
-                await readFile(csProjFile),
-                async (err: any, result: any) => {
-                    let moduleSPDataId = '';
-                    for (let i = 0; i < result.Project.ItemGroup.length; i++) {
-                        const itemGroup = result.Project.ItemGroup[i].None;
-                        if (!itemGroup)
-                            continue;
-                        for (let j = 0; j < itemGroup.length; j++) {
-                            const item = itemGroup[j];
-                            if (item.$.Include === spDataRelativeToProjectRoot) {
-                                moduleSPDataId = item.SharePointProjectItemId[0].replace(/(\{|\})/g, '');
-                                break;
-                            }
-                        }
-                        if (moduleSPDataId)
-                            break;
+            const result = await parseXML<any>(await readFile(csProjFile));
+            let moduleSPDataId = '';
+            for (let i = 0; i < result.Project.ItemGroup.length; i++) {
+                const itemGroup = result.Project.ItemGroup[i].None;
+                if (!itemGroup)
+                    continue;
+                for (let j = 0; j < itemGroup.length; j++) {
+                    const item = itemGroup[j];
+                    if (item.$.Include === spDataRelativeToProjectRoot) {
+                        moduleSPDataId = item.SharePointProjectItemId[0].replace(/(\{|\})/g, '');
+                        break;
                     }
+                }
+                if (moduleSPDataId)
+                    break;
+            }
 
-                    if (moduleSPDataId) {
-                        const features = (await readDir(path.join(projectDir, 'Features')));
-                        for (let i = 0; i < features.length; i++) {
-                            const featureName = features[i];
-                            const feature = await readFile(path.join(projectDir, 'Features', featureName, featureName + '.feature'));
-                            parser.parseString(feature,
-                                async (err: any, result: any) => {
-                                    const featureItems = result.feature.projectItems[0].projectItemReference;
-                                    for (let j = 0; j < featureItems.length; j++) {
-                                        const featureItem = featureItems[j];
-                                        if (featureItem.$.itemId === moduleSPDataId) {
-                                            const featureDeploymentPath =
-                                                result.feature.$.deploymentPath
-                                                    .replace('$SharePoint.Project.FileNameWithoutExtension$', path.basename(projectDir))
-                                                    .replace('$SharePoint.Feature.FileNameWithoutExtension$', featureName);
-                                            const copyTarget =
-                                                path.join(
-                                                    this._spTemplatePath,
-                                                    'FEATURES',
-                                                    featureDeploymentPath,
-                                                    pathInFeature,
-                                                    path.basename(filePath));
-                                            this._log(`Copy ${filePath} -> ${copyTarget}`);
-                                            fs.copyFile(filePath, copyTarget, (e) => {
-                                                console.log('error copy ' + e.message);
-                                            });
-                                        }
-                                    }
-                                });
+            if (moduleSPDataId) {
+                const features = (await readDir(path.join(projectDir, 'Features')));
+                for (let i = 0; i < features.length; i++) {
+                    const featureName = features[i];
+                    const feature = await readFile(path.join(projectDir, 'Features', featureName, featureName + '.feature'));
+                    const result = await parseXML<any>(feature);
+                    const featureItems = result.feature.projectItems[0].projectItemReference;
+                    for (let j = 0; j < featureItems.length; j++) {
+                        const featureItem = featureItems[j];
+                        if (featureItem.$.itemId === moduleSPDataId) {
+                            const featureDeploymentPath =
+                                result.feature.$.deploymentPath
+                                    .replace('$SharePoint.Project.FileNameWithoutExtension$', path.basename(projectDir))
+                                    .replace('$SharePoint.Feature.FileNameWithoutExtension$', featureName);
+                            const copyTarget =
+                                path.join(
+                                    this._spTemplatePath,
+                                    'FEATURES',
+                                    featureDeploymentPath,
+                                    pathInFeature,
+                                    path.basename(filePath));
+                            this._log(`Copy {Workspace}\\${path.relative(workspaceRoot, filePath)} -> {Template}\\${path.relative(this._spTemplatePath, copyTarget)}`);
+                            fs.copyFile(filePath, copyTarget, (e) => {
+                                console.log('error copy ' + e.message);
+                            });
                         }
                     }
-                });
+                }
+            }
         }
     }
 
-    public copyFile(sourceFilePath: string) {
+    private _deployTemplateFile(deployType: string, targetFolder: string, spDataItemFile: string, sourceFilePath: string) {
+        const workspaceRoot = vscode.workspace.workspaceFolders![0].uri.fsPath;
+        const filePathRelaticeToSPDir = path.relative(path.dirname(spDataItemFile), sourceFilePath);
+
+        const spBasePath =
+            deployType == 'TemplateFile' ?
+                this._spTemplatePath :
+                path.resolve(this._spTemplatePath, '..');
+
+        const targetFilePath = path.join(spBasePath, targetFolder, filePathRelaticeToSPDir);
+
+        this._log(`Copy {Workspace}\\${path.relative(workspaceRoot, sourceFilePath)} -> ${deployType == 'RootFile' ? '{Root}' : '{Template}'}\\${path.relative(spBasePath, targetFilePath)}`)
+
+        fs.copyFile(sourceFilePath, targetFilePath, (e) => {
+            console.log('error copy ' + e.message);
+        });
+    }
+
+    public async copyFile(sourceFilePath: string) {
         if (!this._spTemplatePath)
             return;
 
-        const workspaceRoot = vscode.workspace.workspaceFolders![0].uri.fsPath;
         const fileDir = path.dirname(sourceFilePath);
         const fileName = path.basename(sourceFilePath);
 
-        this._searchSPDataFile(fileDir, (spDataPath) => {
-            fs.readFile(spDataPath, (err, data) => {
-                var parser = new xml2js.Parser();
-                parser.parseString(data, (err: any, result: any) => {
-                    let relatedProjectItem = null;
-                    if (result.ProjectItem.Files && result.ProjectItem.Files[0]) {
-                        const files = result.ProjectItem.Files[0].ProjectItemFile;
-                        for (let i = 0; i < files.length; i++) {
-                            const projectItemFile = files[i];
-                            if (projectItemFile.$.Source === fileName) {
-                                relatedProjectItem = projectItemFile;
-                            }
+        const spDataItemFile = await searchFileAscending(fileDir, (f) => f == 'SharePointProjectItem.spdata');
+
+        if (!spDataItemFile)
+            return;
+
+        const fileStream = await readFile(spDataItemFile);
+        const spData = await parseXML<SPDataFile>(fileStream);
+
+        if (spData.ProjectItem.$.Type == "Microsoft.VisualStudio.SharePoint.MappedFolder") {
+            const mappedFolder = spData.ProjectItem.ProjectItemFolder![0];
+            if (mappedFolder) {
+                const deployType = mappedFolder.$.Type;
+                const targetFolder = mappedFolder.$.Target;
+                this._deployTemplateFile(deployType, targetFolder, spDataItemFile, sourceFilePath);
+                this._log(`Deployed at ${new Date()}`);
+            }
+        } else {
+            let relatedProjectItem: ProjectItemFile | undefined;
+            if (spData.ProjectItem.Files && spData.ProjectItem.Files[0]) {
+                const files = spData.ProjectItem.Files[0].ProjectItemFile;
+                if (files)
+                    for (let i = 0; i < files.length; i++) {
+                        const projectItemFile = files[i];
+                        if (projectItemFile.$.Source === fileName) {
+                            relatedProjectItem = projectItemFile;
                         }
                     }
-                    let itemType = result.ProjectItem.$.Type;
-                    if (itemType === 'Microsoft.VisualStudio.SharePoint.Module') {
-                        this._log(`Try deploy ${relatedProjectItem.$.Source} as part of module`)
-                        this._deployModuleFile(sourceFilePath, spDataPath, relatedProjectItem.$.Target).then(() => {
-                            this._log(`Deployed at ${new Date()}`);
-                        });
-                    } else {
-                        var deployType = result.ProjectItem.ProjectItemFolder[0].$.Type;
+            }
+            if (!relatedProjectItem) {
 
-                        var deployTargetDir = result.ProjectItem.ProjectItemFolder[0].$.Target;
-                        var deploySourceDir = path.dirname(spDataPath);
-
-                        var deployRelativePath = path.relative(deploySourceDir, sourceFilePath);
-
-                        var deployBase =
-                            deployType == 'TemplateFile' ?
-                                this._spTemplatePath :
-                                path.resolve(this._spTemplatePath, '..');
-
-                        var deployTargetFile = path.join(deployBase, deployTargetDir, deployRelativePath);
-                        console.log(`Copy to root {Workspace}\\${path.relative(workspaceRoot, sourceFilePath)} -> ${deployType == 'RootFile' ? '{Root}' : '{Template}'}\\${path.relative(deployBase, deployTargetFile)}`);
-                        fs.copyFile(sourceFilePath, deployTargetFile, (e) => {
-                            console.log('error copy ' + e.message);
-                        });
+            } else {
+                if (relatedProjectItem.$.Type == "ElementFile") {
+                    await this._deployElementFile(sourceFilePath, spDataItemFile, relatedProjectItem.$.Target);
+                    this._log(`Deployed at ${new Date()}`);
+                } else
+                    if (relatedProjectItem.$.Type == "TemplateFile") {
+                        this._deployTemplateFile(relatedProjectItem.$.Type, relatedProjectItem.$.Target, spDataItemFile, sourceFilePath);
+                        this._log(`Deployed at ${new Date()}`);
                     }
-                });
-            });
-        });
+            }
+        }
     }
 
     dispose() {
@@ -229,14 +196,12 @@ class SPCopyController {
     private _disposable: vscode.Disposable;
     private _copier: SPCopier;
 
-    constructor(copier: SPCopier) {
-        this._copier = copier;
+    constructor() {
+        this._copier = new SPCopier();
 
-        // subscribe to selection change and editor activation events
-        let subscriptions: vscode.Disposable[] = [];
-        vscode.workspace.onDidSaveTextDocument(this._onEvent, this, subscriptions);
+        let subscriptions: vscode.Disposable[] = [this._copier];
+        vscode.workspace.onDidSaveTextDocument(this._onDocumentSave, this, subscriptions);
 
-        // create a combined disposable from both event subscriptions
         this._disposable = vscode.Disposable.from(...subscriptions);
     }
 
@@ -244,9 +209,8 @@ class SPCopyController {
         this._disposable.dispose();
     }
 
-    private _onEvent(doc: vscode.TextDocument) {
+    private _onDocumentSave(doc: vscode.TextDocument) {
         var filePath = doc.fileName;
-        console.log('start copy ' + filePath);
         this._copier.copyFile(filePath);
     }
 }

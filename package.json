@@ -2,7 +2,7 @@
     "name": "spcopy",
     "displayName": "Sharepoint static files autodeploy",
     "description": "Copies files from Sharepoint project to template or root folder.",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "publisher" : "AlexanderTatarnikov",
     "repository": "https://github.com/alexi-t/sp-root-copy",
     "engines": {
